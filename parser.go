@@ -28,16 +28,37 @@ type RDFDocument struct {
 
 // Ebook represents the main pgterms:ebook element
 type Ebook struct {
-	About     string      `xml:"about,attr"`
-	Title     string      `xml:"title"`
-	Creator   []Creator   `xml:"creator"`
-	Subject   []Subject   `xml:"subject"`
-	Language  []Language  `xml:"language"`
-	Rights    string      `xml:"rights"`
-	Issued    string      `xml:"issued"`
-	Downloads string      `xml:"downloads"`
-	Format    []RDFFormat `xml:"hasFormat"`
-	Publisher string      `xml:"publisher"`
+	About       string         `xml:"about,attr"`
+	Title       string         `xml:"title"`
+	Creator     []Creator      `xml:"creator"`
+	Subject     []Subject      `xml:"subject"`
+	Language    []Language     `xml:"language"`
+	Rights      string         `xml:"rights"`
+	Issued      string         `xml:"issued"`
+	Downloads   string         `xml:"downloads"`
+	Format      []RDFFormat    `xml:"hasFormat"`
+	Publisher   string         `xml:"publisher"`
+	License     LicenseElement `xml:"license"`
+	Description []string       `xml:"description"`
+	MARC508     string         `xml:"marc508"`
+	MARC520     string         `xml:"marc520"`
+	MARC908     string         `xml:"marc908"`
+	Bookshelf   []Bookshelf    `xml:"bookshelf"`
+}
+
+// Bookshelf represents a pgterms:bookshelf element
+type Bookshelf struct {
+	Description *BookshelfDescription `xml:"Description"`
+}
+
+// BookshelfDescription represents the nested Description in bookshelf
+type BookshelfDescription struct {
+	Value string `xml:"value"`
+}
+
+// LicenseElement represents a dcterms:license element with resource attribute
+type LicenseElement struct {
+	Resource string `xml:"resource,attr"`
 }
 
 // Creator represents a creator element
@@ -45,13 +66,19 @@ type Creator struct {
 	Agent *Agent `xml:"agent"`
 }
 
+// WebpageElement represents a pgterms:webpage element with resource attribute
+type WebpageElement struct {
+	Resource string `xml:"resource,attr"`
+}
+
 // Agent represents a pgterms:agent element
 type Agent struct {
-	About     string   `xml:"about,attr"`
-	Name      string   `xml:"name"`
-	BirthDate string   `xml:"birthdate"`
-	DeathDate string   `xml:"deathdate"`
-	Alias     []string `xml:"alias"`
+	About     string           `xml:"about,attr"`
+	Name      string           `xml:"name"`
+	BirthDate string           `xml:"birthdate"`
+	DeathDate string           `xml:"deathdate"`
+	Alias     []string         `xml:"alias"`
+	Webpage   []WebpageElement `xml:"webpage"`
 }
 
 // Subject represents a subject element with nested Description
@@ -66,8 +93,14 @@ type SubjectDescription struct {
 
 // Language represents a language element
 type Language struct {
-	Resource string `xml:"resource,attr"`
-	Value    string `xml:",chardata"`
+	Description *LanguageDescription `xml:"Description"`
+	Resource    string               `xml:"resource,attr"`
+	Value       string               `xml:",chardata"`
+}
+
+// LanguageDescription represents the nested Description in language
+type LanguageDescription struct {
+	Value string `xml:"value"`
 }
 
 // RDFFormat represents a format element (dcterms:hasFormat with pgterms:file)
@@ -109,9 +142,10 @@ func ParseRDF(reader io.Reader) (*Book, error) {
 	}
 
 	book := &Book{
-		Authors:  []Author{},
-		Subjects: []string{},
-		Formats:  []Format{},
+		Authors:     []Author{},
+		Subjects:    []string{},
+		Formats:     []Format{},
+		Bookshelves: []string{},
 	}
 
 	if doc.Ebook == nil {
@@ -127,6 +161,12 @@ func ParseRDF(reader io.Reader) (*Book, error) {
 
 	// Extract title
 	book.Title = strings.TrimSpace(ebook.Title)
+
+	// Extract publisher
+	book.Publisher = strings.TrimSpace(ebook.Publisher)
+
+	// Extract license
+	book.License = strings.TrimSpace(ebook.License.Resource)
 
 	// Extract rights
 	book.Rights = strings.TrimSpace(ebook.Rights)
@@ -144,10 +184,14 @@ func ParseRDF(reader io.Reader) (*Book, error) {
 	// Extract language
 	for _, lang := range ebook.Language {
 		if book.Language == "" {
-			if lang.Resource != "" {
-				// Extract language code from resource URI (e.g., "http://purl.org/dc/terms/LCSH" -> "LCSH")
+			// Check for nested Description structure (most common)
+			if lang.Description != nil && lang.Description.Value != "" {
+				book.Language = strings.TrimSpace(lang.Description.Value)
+			} else if lang.Resource != "" {
+				// Extract language code from resource URI
 				book.Language = lang.Resource
-			} else {
+			} else if lang.Value != "" {
+				// Fallback to direct value (chardata)
 				book.Language = strings.TrimSpace(lang.Value)
 			}
 		}
@@ -156,9 +200,38 @@ func ParseRDF(reader io.Reader) (*Book, error) {
 	// Extract creators/authors
 	for _, creator := range ebook.Creator {
 		if creator.Agent != nil {
+			fullName := strings.TrimSpace(creator.Agent.Name)
+			firstName, lastName := splitName(fullName)
+
 			author := Author{
-				Name: strings.TrimSpace(creator.Agent.Name),
+				Name:      fullName,
+				FirstName: firstName,
+				LastName:  lastName,
+				AgentID:   strings.TrimSpace(creator.Agent.About),
 			}
+
+			// Extract aliases (join multiple with semicolon)
+			if len(creator.Agent.Alias) > 0 {
+				aliases := make([]string, 0, len(creator.Agent.Alias))
+				for _, alias := range creator.Agent.Alias {
+					if trimmed := strings.TrimSpace(alias); trimmed != "" {
+						aliases = append(aliases, trimmed)
+					}
+				}
+				author.Alias = strings.Join(aliases, "; ")
+			}
+
+			// Extract webpages (join multiple with semicolon)
+			if len(creator.Agent.Webpage) > 0 {
+				webpages := make([]string, 0, len(creator.Agent.Webpage))
+				for _, webpage := range creator.Agent.Webpage {
+					if trimmed := strings.TrimSpace(webpage.Resource); trimmed != "" {
+						webpages = append(webpages, trimmed)
+					}
+				}
+				author.Webpage = strings.Join(webpages, "; ")
+			}
+
 			if creator.Agent.BirthDate != "" {
 				if year := extractYear(creator.Agent.BirthDate); year != nil {
 					author.BirthYear = year
@@ -175,12 +248,42 @@ func ParseRDF(reader io.Reader) (*Book, error) {
 		}
 	}
 
+	// Extract descriptions (join multiple with newlines)
+	if len(ebook.Description) > 0 {
+		descriptions := make([]string, 0, len(ebook.Description))
+		for _, desc := range ebook.Description {
+			if trimmed := strings.TrimSpace(desc); trimmed != "" {
+				descriptions = append(descriptions, trimmed)
+			}
+		}
+		book.Description = strings.Join(descriptions, "\n\n")
+	}
+
+	// Extract summary (marc520)
+	book.Summary = strings.TrimSpace(ebook.MARC520)
+
+	// Extract production notes (marc508)
+	book.ProductionNotes = strings.TrimSpace(ebook.MARC508)
+
+	// Extract reading ease score (marc908)
+	book.ReadingEaseScore = strings.TrimSpace(ebook.MARC908)
+
 	// Extract subjects
 	for _, subject := range ebook.Subject {
 		if subject.Description != nil {
 			subj := strings.TrimSpace(subject.Description.Value)
 			if subj != "" {
 				book.Subjects = append(book.Subjects, subj)
+			}
+		}
+	}
+
+	// Extract bookshelves
+	for _, bookshelf := range ebook.Bookshelf {
+		if bookshelf.Description != nil {
+			bs := strings.TrimSpace(bookshelf.Description.Value)
+			if bs != "" {
+				book.Bookshelves = append(book.Bookshelves, bs)
 			}
 		}
 	}
@@ -266,4 +369,42 @@ func extractFormatFromURL(url string) string {
 		return "text/plain"
 	}
 	return ""
+}
+
+// splitName splits a full name into first name and last name.
+// Handles various formats:
+// - "Last, First" (most common in Gutenberg)
+// - "First Last"
+// - "First Middle Last"
+// - Single names (organizations, etc.)
+func splitName(fullName string) (firstName, lastName string) {
+	fullName = strings.TrimSpace(fullName)
+	if fullName == "" {
+		return "", ""
+	}
+
+	// Check for "Last, First" format (comma-separated)
+	if strings.Contains(fullName, ",") {
+		parts := strings.SplitN(fullName, ",", 2)
+		if len(parts) == 2 {
+			lastName = strings.TrimSpace(parts[0])
+			firstName = strings.TrimSpace(parts[1])
+			return firstName, lastName
+		}
+	}
+
+	// Split by spaces for "First Last" or "First Middle Last" format
+	parts := strings.Fields(fullName)
+	if len(parts) == 0 {
+		return "", ""
+	} else if len(parts) == 1 {
+		// Single name - treat as last name (could be organization)
+		return "", parts[0]
+	} else {
+		// Multiple parts: first name is first part, last name is last part
+		// Middle names are ignored for simplicity
+		firstName = parts[0]
+		lastName = parts[len(parts)-1]
+		return firstName, lastName
+	}
 }

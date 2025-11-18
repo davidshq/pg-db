@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -40,6 +41,12 @@ func NewDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
+	// Run migrations to add new columns if they don't exist
+	if err := db.migrateSchema(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to migrate schema: %w", err)
+	}
+
 	return db, nil
 }
 
@@ -57,9 +64,15 @@ func (db *DB) initSchema() error {
 		gutenberg_id TEXT UNIQUE NOT NULL,
 		title TEXT,
 		language TEXT,
+		publisher TEXT,
+		license TEXT,
 		rights TEXT,
 		issued_date TEXT,
 		download_count INTEGER DEFAULT 0,
+		description TEXT,
+		summary TEXT,
+		production_notes TEXT,
+		reading_ease_score TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -67,6 +80,11 @@ func (db *DB) initSchema() error {
 	CREATE TABLE IF NOT EXISTS authors (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
+		first_name TEXT,
+		last_name TEXT,
+		agent_id TEXT,
+		alias TEXT,
+		webpage TEXT,
 		birth_year INTEGER,
 		death_year INTEGER,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -74,6 +92,10 @@ func (db *DB) initSchema() error {
 
 	-- Unique constraint on author name and dates
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_authors_unique ON authors(name, birth_year, death_year);
+	
+	-- Indexes for author name parts
+	CREATE INDEX IF NOT EXISTS idx_authors_first_name ON authors(first_name);
+	CREATE INDEX IF NOT EXISTS idx_authors_last_name ON authors(last_name);
 
 	-- Book-Author relationship table
 	CREATE TABLE IF NOT EXISTS book_authors (
@@ -100,6 +122,22 @@ func (db *DB) initSchema() error {
 		FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
 	);
 
+	-- Bookshelves table
+	CREATE TABLE IF NOT EXISTS bookshelves (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bookshelf TEXT UNIQUE NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Book-Bookshelf relationship table
+	CREATE TABLE IF NOT EXISTS book_bookshelves (
+		book_id INTEGER NOT NULL,
+		bookshelf_id INTEGER NOT NULL,
+		PRIMARY KEY (book_id, bookshelf_id),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+		FOREIGN KEY (bookshelf_id) REFERENCES bookshelves(id) ON DELETE CASCADE
+	);
+
 	-- Formats table
 	CREATE TABLE IF NOT EXISTS formats (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +155,9 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_book_authors_author_id ON book_authors(author_id);
 	CREATE INDEX IF NOT EXISTS idx_book_subjects_book_id ON book_subjects(book_id);
 	CREATE INDEX IF NOT EXISTS idx_book_subjects_subject_id ON book_subjects(subject_id);
+	CREATE INDEX IF NOT EXISTS idx_book_bookshelves_book_id ON book_bookshelves(book_id);
+	CREATE INDEX IF NOT EXISTS idx_book_bookshelves_bookshelf_id ON book_bookshelves(bookshelf_id);
+	CREATE INDEX IF NOT EXISTS idx_authors_agent_id ON authors(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_formats_book_id ON formats(book_id);
 	`
 
@@ -127,22 +168,82 @@ func (db *DB) initSchema() error {
 	return nil
 }
 
+// migrateSchema adds new columns to existing tables if they don't exist
+func (db *DB) migrateSchema() error {
+	migrations := []string{
+		// Add new author columns if they don't exist
+		`ALTER TABLE authors ADD COLUMN first_name TEXT`,
+		`ALTER TABLE authors ADD COLUMN last_name TEXT`,
+		`ALTER TABLE authors ADD COLUMN agent_id TEXT`,
+		`ALTER TABLE authors ADD COLUMN alias TEXT`,
+		`ALTER TABLE authors ADD COLUMN webpage TEXT`,
+		// Add new book columns if they don't exist
+		`ALTER TABLE books ADD COLUMN publisher TEXT`,
+		`ALTER TABLE books ADD COLUMN license TEXT`,
+		`ALTER TABLE books ADD COLUMN description TEXT`,
+		`ALTER TABLE books ADD COLUMN summary TEXT`,
+		`ALTER TABLE books ADD COLUMN production_notes TEXT`,
+		`ALTER TABLE books ADD COLUMN reading_ease_score TEXT`,
+	}
+
+	for _, migration := range migrations {
+		// SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN,
+		// so we need to check if the column exists first
+		_, err := db.conn.Exec(migration)
+		if err != nil {
+			// Ignore "duplicate column name" errors (column already exists)
+			// SQLite returns error code 1 for this
+			if !strings.Contains(err.Error(), "duplicate column") {
+				// For other errors, log but don't fail (might be column already exists)
+				log.Printf("Migration warning (may be safe to ignore): %v", err)
+			}
+		}
+	}
+
+	// Create indexes if they don't exist
+	indexMigrations := []string{
+		`CREATE INDEX IF NOT EXISTS idx_authors_first_name ON authors(first_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_authors_last_name ON authors(last_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_authors_agent_id ON authors(agent_id)`,
+	}
+
+	for _, migration := range indexMigrations {
+		if _, err := db.conn.Exec(migration); err != nil {
+			log.Printf("Index creation warning: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // Book represents a book record
 type Book struct {
-	GutenbergID   string
-	Title         string
-	Language      string
-	Rights        string
-	IssuedDate    string
-	DownloadCount int
-	Authors       []Author
-	Subjects      []string
-	Formats       []Format
+	GutenbergID      string
+	Title            string
+	Language         string
+	Publisher        string
+	License          string
+	Rights           string
+	IssuedDate       string
+	DownloadCount    int
+	Description      string
+	Summary          string
+	ProductionNotes  string
+	ReadingEaseScore string
+	Authors          []Author
+	Subjects         []string
+	Bookshelves      []string
+	Formats          []Format
 }
 
 // Author represents an author record
 type Author struct {
 	Name      string
+	FirstName string
+	LastName  string
+	AgentID   string
+	Alias     string
+	Webpage   string
 	BirthYear *int
 	DeathYear *int
 }
@@ -174,15 +275,21 @@ func (db *DB) InsertBook(book *Book) error {
 
 	// Insert or update book (preserve created_at for existing books)
 	_, err = tx.Exec(`
-		INSERT INTO books (gutenberg_id, title, language, rights, issued_date, download_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO books (gutenberg_id, title, language, publisher, license, rights, issued_date, download_count, description, summary, production_notes, reading_ease_score, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(gutenberg_id) DO UPDATE SET
 			title = excluded.title,
 			language = excluded.language,
+			publisher = excluded.publisher,
+			license = excluded.license,
 			rights = excluded.rights,
 			issued_date = excluded.issued_date,
-			download_count = excluded.download_count
-	`, book.GutenbergID, book.Title, book.Language, book.Rights, book.IssuedDate, book.DownloadCount, time.Now())
+			download_count = excluded.download_count,
+			description = excluded.description,
+			summary = excluded.summary,
+			production_notes = excluded.production_notes,
+			reading_ease_score = excluded.reading_ease_score
+	`, book.GutenbergID, book.Title, book.Language, book.Publisher, book.License, book.Rights, book.IssuedDate, book.DownloadCount, book.Description, book.Summary, book.ProductionNotes, book.ReadingEaseScore, time.Now())
 	if err != nil {
 		return fmt.Errorf("failed to insert book: %w", err)
 	}
@@ -209,12 +316,26 @@ func (db *DB) InsertBook(book *Book) error {
 		if err == nil && existingID.Valid {
 			// Author exists, use existing ID
 			authorID = existingID.Int64
+
+			// Update author fields if they're not already set
+			_, err = tx.Exec(`
+				UPDATE authors 
+				SET first_name = COALESCE(NULLIF(?, ''), first_name),
+				    last_name = COALESCE(NULLIF(?, ''), last_name),
+				    agent_id = COALESCE(NULLIF(?, ''), agent_id),
+				    alias = COALESCE(NULLIF(?, ''), alias),
+				    webpage = COALESCE(NULLIF(?, ''), webpage)
+				WHERE id = ?
+			`, author.FirstName, author.LastName, author.AgentID, author.Alias, author.Webpage, authorID)
+			if err != nil {
+				return fmt.Errorf("failed to update author: %w", err)
+			}
 		} else if err == sql.ErrNoRows {
 			// Insert new author
 			result, err := tx.Exec(`
-				INSERT INTO authors (name, birth_year, death_year, created_at)
-				VALUES (?, ?, ?, ?)
-			`, author.Name, author.BirthYear, author.DeathYear, time.Now())
+				INSERT INTO authors (name, first_name, last_name, agent_id, alias, webpage, birth_year, death_year, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, author.Name, author.FirstName, author.LastName, author.AgentID, author.Alias, author.Webpage, author.BirthYear, author.DeathYear, time.Now())
 			if err != nil {
 				return fmt.Errorf("failed to insert author: %w", err)
 			}
@@ -272,6 +393,37 @@ func (db *DB) InsertBook(book *Book) error {
 		_, err = tx.Exec("DELETE FROM formats WHERE book_id = ?", bookID)
 		if err != nil {
 			return fmt.Errorf("failed to delete existing formats: %w", err)
+		}
+	}
+
+	// Insert bookshelves
+	for _, bookshelf := range book.Bookshelves {
+		var bookshelfID int64
+		// Try to get existing bookshelf ID
+		err := tx.QueryRow("SELECT id FROM bookshelves WHERE bookshelf = ?", bookshelf).Scan(&bookshelfID)
+		if err == sql.ErrNoRows {
+			// Insert new bookshelf
+			result, err := tx.Exec(`
+				INSERT INTO bookshelves (bookshelf, created_at)
+				VALUES (?, ?)
+			`, bookshelf, time.Now())
+			if err != nil {
+				return fmt.Errorf("failed to insert bookshelf: %w", err)
+			}
+			bookshelfID, err = result.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("failed to get bookshelf ID: %w", err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("failed to query bookshelf: %w", err)
+		}
+
+		_, err = tx.Exec(`
+			INSERT OR IGNORE INTO book_bookshelves (book_id, bookshelf_id)
+			VALUES (?, ?)
+		`, bookID, bookshelfID)
+		if err != nil {
+			return fmt.Errorf("failed to link bookshelf: %w", err)
 		}
 	}
 
