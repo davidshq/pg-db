@@ -2,3 +2,4 @@
 pg.db
 pg.db-journal
 rdf-files.tar.zip
+/rdf-files.tar-extracted/
