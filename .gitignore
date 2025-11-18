@@ -1,0 +1,4 @@
+*.exe
+pg.db
+pg.db-journal
+rdf-files.tar.zip
