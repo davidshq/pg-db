@@ -8,14 +8,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Verify database was created and populated correctly
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run verify_db.go <db-path>")
+// VerifyDB verifies that the database was created and populated correctly
+func VerifyDB(dbPath string) {
+	if dbPath == "" {
+		fmt.Println("Error: database path is required")
 		os.Exit(1)
 	}
 
-	dbPath := os.Args[1]
 	fmt.Printf("Verifying database: %s\n\n", dbPath)
 
 	conn, err := sql.Open("sqlite", dbPath)

@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-func main() {
+// InspectRDF inspects RDF files from the archive and displays their structure
+func InspectRDF() {
 	rdfFiles, cleanup, err := ExtractRDFFiles("rdf-files.tar.zip")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
