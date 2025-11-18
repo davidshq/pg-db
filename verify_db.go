@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -25,7 +28,7 @@ func VerifyDB(dbPath string) {
 	defer conn.Close()
 
 	// Check if database exists and has tables
-	tables := []string{"books", "authors", "subjects", "book_authors", "book_subjects", "formats"}
+	tables := []string{"books", "authors", "subjects", "book_authors", "book_subjects", "bookshelves", "book_bookshelves", "formats"}
 
 	fmt.Println("Checking tables:")
 	for _, table := range tables {
@@ -79,4 +82,12 @@ func VerifyDB(dbPath string) {
 	}
 
 	fmt.Println("\nDatabase verification complete!")
+}
+
+func main() {
+	dbPath := "pg.db"
+	if len(os.Args) > 1 {
+		dbPath = os.Args[1]
+	}
+	VerifyDB(dbPath)
 }

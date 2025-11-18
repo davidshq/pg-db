@@ -17,7 +17,7 @@ A Go CLI application that extracts and imports Project Gutenberg RDF metadata fi
 
 ### Prerequisites
 
-- **Go 1.19 or later**
+- **Go 1.24.4 or later**
 
 ### Build
 
@@ -103,6 +103,12 @@ After importing, verify the database:
 go run verify_db.go pg.db
 ```
 
+Or use the default database:
+
+```bash
+go run verify_db.go
+```
+
 ## Database Schema
 
 The application creates a normalized database schema with the following tables:
@@ -117,9 +123,15 @@ Core book metadata.
 | gutenberg_id | TEXT | Project Gutenberg ebook ID (unique) |
 | title | TEXT | Book title |
 | language | TEXT | Language code |
+| publisher | TEXT | Publisher information |
+| license | TEXT | License information |
 | rights | TEXT | Rights information |
 | issued_date | TEXT | Publication/issue date |
 | download_count | INTEGER | Number of downloads |
+| description | TEXT | Book description |
+| summary | TEXT | Book summary (MARC 520) |
+| production_notes | TEXT | Production notes (MARC 508) |
+| reading_ease_score | TEXT | Reading ease score (MARC 908) |
 | created_at | TIMESTAMP | Record creation timestamp |
 
 ### authors
@@ -130,6 +142,11 @@ Author information.
 |--------|------|-------------|
 | id | INTEGER | Primary key |
 | name | TEXT | Author name |
+| first_name | TEXT | First name (nullable) |
+| last_name | TEXT | Last name (nullable) |
+| agent_id | TEXT | Agent ID from RDF (nullable) |
+| alias | TEXT | Author aliases (nullable) |
+| webpage | TEXT | Author webpage URLs (nullable) |
 | birth_year | INTEGER | Birth year (nullable) |
 | death_year | INTEGER | Death year (nullable) |
 | created_at | TIMESTAMP | Record creation timestamp |
@@ -161,6 +178,25 @@ Many-to-many relationship between books and subjects.
 |--------|------|-------------|
 | book_id | INTEGER | Foreign key to books.id |
 | subject_id | INTEGER | Foreign key to subjects.id |
+
+### bookshelves
+
+Bookshelf/category classifications.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Primary key |
+| bookshelf | TEXT | Bookshelf name (unique) |
+| created_at | TIMESTAMP | Record creation timestamp |
+
+### book_bookshelves
+
+Many-to-many relationship between books and bookshelves.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| book_id | INTEGER | Foreign key to books.id |
+| bookshelf_id | INTEGER | Foreign key to bookshelves.id |
 
 ### formats
 
@@ -217,6 +253,18 @@ JOIN formats f ON b.id = f.book_id
 WHERE b.gutenberg_id = '12345';
 ```
 
+### Find books by bookshelf
+
+```sql
+SELECT b.title, b.gutenberg_id, bs.bookshelf
+FROM books b
+JOIN book_bookshelves bbs ON b.id = bbs.book_id
+JOIN bookshelves bs ON bbs.bookshelf_id = bs.id
+WHERE bs.bookshelf LIKE '%Fiction%'
+ORDER BY b.download_count DESC
+LIMIT 10;
+```
+
 ## Performance Considerations
 
 - **Batch Size**: Larger batch sizes reduce transaction overhead but use more memory. Default (1000) is a good balance.
@@ -247,9 +295,10 @@ The application uses `modernc.org/sqlite`, a pure Go implementation of SQLite th
 ### RDF Parsing
 
 The parser handles Project Gutenberg's RDF/XML format, extracting:
-- Book metadata (title, language, rights, issue date, download count)
-- Author information (name, birth/death years)
+- Book metadata (title, language, publisher, license, rights, issue date, download count, description, summary, production notes, reading ease score)
+- Author information (name, first name, last name, agent ID, aliases, webpages, birth/death years)
 - Subject classifications
+- Bookshelf/category classifications
 - Available file formats with URLs and sizes
 
 ### Limitations

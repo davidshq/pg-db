@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.19 or later**
+- **Go 1.24.4 or later**
 
 
 ## Quick Start
@@ -61,6 +61,12 @@ Test that everything works:
 
 # Verify the database was created and populated
 go run verify_db.go test.db
+```
+
+Or use the default database:
+
+```bash
+go run verify_db.go
 ```
 
 
