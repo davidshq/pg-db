@@ -92,10 +92,6 @@ func (db *DB) initSchema() error {
 
 	-- Unique constraint on author name and dates
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_authors_unique ON authors(name, birth_year, death_year);
-	
-	-- Indexes for author name parts
-	CREATE INDEX IF NOT EXISTS idx_authors_first_name ON authors(first_name);
-	CREATE INDEX IF NOT EXISTS idx_authors_last_name ON authors(last_name);
 
 	-- Book-Author relationship table
 	CREATE TABLE IF NOT EXISTS book_authors (
@@ -157,7 +153,6 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_book_subjects_subject_id ON book_subjects(subject_id);
 	CREATE INDEX IF NOT EXISTS idx_book_bookshelves_book_id ON book_bookshelves(book_id);
 	CREATE INDEX IF NOT EXISTS idx_book_bookshelves_bookshelf_id ON book_bookshelves(bookshelf_id);
-	CREATE INDEX IF NOT EXISTS idx_authors_agent_id ON authors(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_formats_book_id ON formats(book_id);
 	`
 
